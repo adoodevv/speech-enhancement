@@ -1,4 +1,4 @@
-# Speech Enhancement for Voice-Based MoMo Authentication
+# Mini Project 2: Speech Enhancement for Voice-Based MoMo Authentication
 
 Scenario: **Open-air market chatter**  
 Method: **Spectral subtraction**  
@@ -82,9 +82,223 @@ deactivate
 With the venv **still activated**:
 
 ```bash
-python -c "import numpy, soundfile, matplotlib; print('OK')"
+python -c "import numpy, soundfile, matplotlib, scipy; print('OK')"
 ```
 
 You should see `OK`. Only after this step, proceed to recordings and analysis.
 
 ---
+
+## 2. Recordings (three kinds of audio)
+
+All project recordings live under `data/raw/`. Use these exact name patterns so the scripts find them.
+
+| Kind | Content | Filename pattern |
+|------|---------|------------------|
+| **Noise only** | Market ambience, **no PIN speech** (2–5 min ideal) | `noise_only_01.wav` |
+| **Clean ref** | Same speaker / PIN style in a **quiet** place | `clean_ref_01.wav` |
+| **Noisy market** | PIN spoken **in the market** (main evaluation) | `noisy_market_01.wav` |
+
+### Current dataset (on disk)
+
+```text
+data/raw/
+  noise_only_01.wav       # ambient market (may be stereo / different fs — code mono-mixes + resamples)
+  clean_ref_01.wav        # quiet PIN reference
+  noisy_market_01.wav     # PIN in market noise (primary eval take)
+```
+
+Optional later: more `noisy_market_02.wav` … takes, more clean refs with matching numbers, a deliberate very-low-SNR failure take.
+
+**Do not** put course blind files in `data/raw/` — those go in `data/blind/` when released.
+
+---
+
+## 3. Folder layout
+
+```text
+data/
+  raw/                 <- your three kinds of audio (above)
+  blind/               <- course blind file later; leave alone until release
+src/
+  noise_stats.py       <- Step A: characterise noise (run first)
+  enhance.py           <- Step B: spectral subtraction
+  metrics.py           <- Step C: SegSNR + LSD (+ no-ref proxy)
+  run_pipeline.py      <- enhance + metrics over a folder
+notebooks/             <- optional exploration
+audio_demo/            <- before/after outputs for presentation
+requirements.txt
+```
+
+---
+
+## 4. Workflow so far (completed steps)
+
+Work through these **in order**. Steps A–C are done for the first take; continue with D–F for the report and blind evaluation.
+
+### Step A — Characterise the noise (required before designing the filter)
+
+```bash
+# venv active, from project root
+python src/noise_stats.py
+```
+
+Reads `data/raw/noise_only_01.wav` (set `NOISE_FILE` in the script if you rename it).
+
+**Outputs (project root):**
+
+- `noise_stationarity_check.png` — spectrum over successive time segments  
+- `noise_spectral_shape.png` — average noise magnitude spectrum  
+
+**Findings on our recording (use in the report):**
+
+| Question | Result | Design implication |
+|----------|--------|--------------------|
+| Stationarity | Mean relative spectral drift **≈ 0.17** (mildly non-stationary) | Do **not** rely on a single frozen noise snapshot only; blend **local VAD** frames with the dedicated ambient profile |
+| Spectral shape | Energy **below 1 kHz ≫ above 4 kHz** (babble / low-band heavy, not white) | Use **frequency-dependent oversubtraction** (stronger where noise is relatively loud) and a **noise-relative** spectral floor |
+
+This step satisfies the brief: *characterise noise statistics before designing the filter, and show evidence this shaped parameters.*
+
+---
+
+### Step B — Spectral subtraction (enhance)
+
+```bash
+# single file
+python src/enhance.py data/raw/noisy_market_01.wav audio_demo/noisy_market_01_enhanced.wav
+
+# or full folder runner (recommended)
+python src/run_pipeline.py data/raw audio_demo
+```
+
+**What the enhancer does:**
+
+1. STFT with **32 ms** frames, **50%** overlap (Hann window).  
+2. **Noise estimate** = blend of  
+   - low-energy frames inside the noisy take (VAD), and  
+   - spectral shape from `noise_only_01.wav` (resampled if needed).  
+3. **Oversubtraction** with frequency-dependent α.  
+4. **Spectral floor** = `β × noise_estimate` (classic form — *not* `β × noisy magnitude`, which re-admits market noise).  
+5. **Residual gate** — soft extra attenuation on low-energy frames (between digits / before speech).  
+6. **Loudness match** on speech-like frames only + spike soft-clip (so the PIN stays audible without re-boosting the whole ambient bed).
+
+**Current parameters** (`src/enhance.py`) — justify these from Step A in the report:
+
+| Parameter | Value | Role |
+|-----------|-------|------|
+| `FRAME_MS` | 32 | Time/frequency resolution for PIN phonemes |
+| `OVERLAP` | 0.5 | Standard STFT OLA |
+| `OVERSUBTRACTION_ALPHA` | 3.0 | Aggressive enough for babble floor |
+| `SPECTRAL_FLOOR_BETA` | 0.01 | Noise-relative floor (limits musical noise / negatives) |
+| `VAD_ENERGY_PERCENTILE` | 25 | Local noise frames inside the take |
+| `EXTERNAL_NOISE_BLEND` | 0.65 | Weight of dedicated `noise_only` shape |
+| `RESIDUAL_GATE_DB` | 12 | Extra cut on non-speech frames |
+| `RESIDUAL_GATE_PERCENTILE` | 55 | Which frames get gated |
+| `TARGET_PEAK` | 0.95 | Avoid clipping after gain match |
+
+**Tuning notes (what we already learned):**
+
+- Too-mild α / high floor + full-file RMS gain match → **PIN audible but market still loud**.  
+- Peak-normalise by absolute max after ISTFT spikes → **PIN almost inaudible**.  
+- Current balance: PIN intelligible, background **reduced but not perfect** (expected for spectral subtraction on babble).
+
+**Demo output:**
+
+```text
+audio_demo/noisy_market_01_enhanced.wav
+```
+
+Compare by ear:
+
+1. `data/raw/noisy_market_01.wav` (before)  
+2. `audio_demo/noisy_market_01_enhanced.wav` (after)  
+3. `data/raw/clean_ref_01.wav` (quiet reference)
+
+---
+
+### Step C — Objective metrics (do not rely on listening alone)
+
+`run_pipeline.py` prints metrics after each file. You can also run:
+
+```bash
+python src/metrics.py
+```
+
+**Metrics used:**
+
+| Metric | Meaning |
+|--------|---------|
+| **Segmental SNR improvement (dB)** | `SegSNR(clean, enhanced) − SegSNR(clean, noisy)` — higher is better; related to the course KPM idea |
+| **Log-spectral distance, LSD (dB)** | Spectral distortion vs clean — **lower** is better (distortion ceiling) |
+| **No-reference proxy** | Noise reduction vs speech retention when no clean pair exists (blind file) |
+
+**Caveat:** our `clean_ref_01` and `noisy_market_01` are **different takes** (not sample-aligned copies of one utterance). Numbers are **indicative** for the report, not lab-perfect.
+
+**Indicative results on `noisy_market_01` (current settings, order-of-magnitude):**
+
+| Check | Approx. result |
+|-------|----------------|
+| Noise-floor frames | ~**20× quieter** than original |
+| Speech-ish frames | Loudness roughly **matched** to original speech |
+| No-ref noise reduction | ~**10 dB** |
+| No-ref speech retention | ~**+1 dB** (speech level kept) |
+| SegSNR improvement vs clean_ref | positive (a few dB; take-mismatch limited) |
+| LSD | still relatively high — residual colouration / babble under digits |
+
+Re-run `run_pipeline.py` after any parameter change and update this table for the final report.
+
+---
+
+## 5. How to re-run everything (checklist)
+
+```bash
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt    # once, or after dependency changes
+
+python src/noise_stats.py          # A — plots + printed drift / band energy
+python src/run_pipeline.py data/raw audio_demo   # B+C — enhance + metrics
+```
+
+Keep venv active for every `python …` command.
+
+---
+
+## 6. Still to do (next steps)
+
+| Step | Task | Status |
+|------|------|--------|
+| A | Noise characterisation | **Done** (save PNGs for report) |
+| B | Spectral subtraction + justified parameters | **Done** (first take; freeze before blind) |
+| C | Objective metrics on own data | **Done** (re-measure after freezes) |
+| D | **Failure mode** — very low SNR or burst noise take; explain degradation | Pending |
+| E | **Demo pack** — 2–3 clear before/after pairs in `audio_demo/` for live presentation | Partial (1 pair) |
+| F | **Blind file** — when placed in `data/blind/`, run pipeline **unmodified** | Pending |
+| G | Report write-up + minimum research sources (method, metrics, MoMo/voice auth context) | Pending |
+
+Blind evaluation:
+
+```bash
+python src/run_pipeline.py data/blind audio_demo/blind
+```
+
+Do **not** retune α/β/gate on the blind file.
+
+---
+
+## 7. Design rationale (short, for the report)
+
+1. **Why spectral subtraction:** assigned enhancement family; works as a single-mic front end with no second reference mic (fits market MoMo scenario).  
+2. **Why 32 ms / 50%:** standard STFT compromise; ~31 Hz bin spacing at 48 kHz frame length, short enough for PIN digits.  
+3. **Why non-stationary handling:** drift ≈ 0.17 → VAD-local noise + ambient `noise_only` shape + residual gate between digits.  
+4. **Why aggressive α and noise-relative β:** market energy is speech-like and low-band heavy; mild settings left the background too loud once PIN gain was restored.  
+5. **Known limit:** babble overlaps the PIN in frequency — residual chatter under speech and some musical/artefact trade-offs remain; show this honestly as a failure / limitation case if needed.
+
+---
+
+## 8. Dependencies
+
+See `requirements.txt`:
+
+- `numpy`, `scipy` — arrays, STFT-related helpers, resampling  
+- `soundfile` — WAV I/O  
+- `matplotlib` — noise-stats plots  
