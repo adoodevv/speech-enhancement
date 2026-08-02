@@ -1,4 +1,4 @@
-# Mini Project 2: Speech Enhancement for Voice-Based MoMo Authentication
+# Speech Enhancement for Voice-Based MoMo Authentication
 
 Scenario: **Open-air market chatter**  
 Method: **Spectral subtraction**  
