@@ -96,19 +96,23 @@ All project recordings live under `data/raw/`. Use these exact name patterns so 
 | Kind | Content | Filename pattern |
 |------|---------|------------------|
 | **Noise only** | Market ambience, **no PIN speech** (2–5 min ideal) | `noise_only_01.wav` |
-| **Clean ref** | Same speaker / PIN style in a **quiet** place | `clean_ref_01.wav` |
-| **Noisy market** | PIN spoken **in the market** (main evaluation) | `noisy_market_01.wav` |
+| **Clean ref** | Same speaker / PIN style in a **quiet** place | `clean_ref_01.wav` … |
+| **Noisy market** | PIN spoken **in the market** (main evaluation) | `noisy_market_01.wav` … |
 
 ### Current dataset (on disk)
 
 ```text
 data/raw/
   noise_only_01.wav       # ambient market (may be stereo / different fs — code mono-mixes + resamples)
-  clean_ref_01.wav        # quiet PIN reference
-  noisy_market_01.wav     # PIN in market noise (primary eval take)
+  clean_ref_01.wav        # quiet PIN references (pair with noisy_* when possible)
+  clean_ref_02.wav
+  clean_ref_03.wav
+  noisy_market_01.wav     # organic market PIN takes (primary evaluation set)
+  noisy_market_02.wav
+  noisy_market_03.wav
 ```
 
-Optional later: more `noisy_market_02.wav` … takes, more clean refs with matching numbers, a deliberate very-low-SNR failure take.
+**Failure-mode audio** (generated / stress-tested — not a substitute for organic market takes) lives under `audio_demo/failure_mode/` (see Step D).
 
 **Do not** put course blind files in `data/raw/` — those go in `data/blind/` when released.
 
@@ -118,15 +122,19 @@ Optional later: more `noisy_market_02.wav` … takes, more clean refs with match
 
 ```text
 data/
-  raw/                 <- your three kinds of audio (above)
+  raw/                 <- three kinds of audio (above)
   blind/               <- course blind file later; leave alone until release
 src/
   noise_stats.py       <- Step A: characterise noise (run first)
   enhance.py           <- Step B: spectral subtraction
   metrics.py           <- Step C: SegSNR + LSD (+ no-ref proxy)
   run_pipeline.py      <- enhance + metrics over a folder
+  failure_mode.py      <- Step D: very-low-SNR stress test
+  burst_failure_mode.py<- Step D: non-stationary burst stress test
 notebooks/             <- optional exploration
-audio_demo/            <- before/after outputs for presentation
+audio_demo/
+  noisy_market_*_enhanced.wav
+  failure_mode/        <- low_snr_* and burst_* before/after pairs
 requirements.txt
 ```
 
@@ -134,7 +142,7 @@ requirements.txt
 
 ## 4. Workflow so far (completed steps)
 
-Work through these **in order**. Steps A–C are done for the first take; continue with D–F for the report and blind evaluation.
+Work through these **in order**. Steps **A–D are done**; continue with E–G for demos, report, and blind evaluation.
 
 ### Step A — Characterise the noise (required before designing the filter)
 
@@ -202,13 +210,15 @@ python src/run_pipeline.py data/raw audio_demo
 - Peak-normalise by absolute max after ISTFT spikes → **PIN almost inaudible**.  
 - Current balance: PIN intelligible, background **reduced but not perfect** (expected for spectral subtraction on babble).
 
-**Demo output:**
+**Demo outputs (organic takes):**
 
 ```text
 audio_demo/noisy_market_01_enhanced.wav
+audio_demo/noisy_market_02_enhanced.wav
+audio_demo/noisy_market_03_enhanced.wav
 ```
 
-Compare by ear:
+Compare by ear (example for take 01):
 
 1. `data/raw/noisy_market_01.wav` (before)  
 2. `audio_demo/noisy_market_01_enhanced.wav` (after)  
@@ -232,20 +242,57 @@ python src/metrics.py
 | **Log-spectral distance, LSD (dB)** | Spectral distortion vs clean — **lower** is better (distortion ceiling) |
 | **No-reference proxy** | Noise reduction vs speech retention when no clean pair exists (blind file) |
 
-**Caveat:** our `clean_ref_01` and `noisy_market_01` are **different takes** (not sample-aligned copies of one utterance). Numbers are **indicative** for the report, not lab-perfect.
+**Caveat:** clean refs and noisy market files are **separate takes** (not sample-aligned clones). Numbers are **indicative** for the report, not lab-perfect.
 
-**Indicative results on `noisy_market_01` (current settings, order-of-magnitude):**
+**Indicative results on organic market takes** (current frozen settings; re-run after any change):
 
-| Check | Approx. result |
-|-------|----------------|
-| Noise-floor frames | ~**20× quieter** than original |
-| Speech-ish frames | Loudness roughly **matched** to original speech |
-| No-ref noise reduction | ~**10 dB** |
-| No-ref speech retention | ~**+1 dB** (speech level kept) |
-| SegSNR improvement vs clean_ref | positive (a few dB; take-mismatch limited) |
-| LSD | still relatively high — residual colouration / babble under digits |
+| File | SegSNR improvement (dB) | LSD (dB, lower better) |
+|------|-------------------------|------------------------|
+| `noisy_market_01` | ~**3.5** | ~**31.6** |
+| `noisy_market_02` | ~**2.8** | ~**23.0** |
+| `noisy_market_03` | ~**2.0** | ~**22.6** |
 
-Re-run `run_pipeline.py` after any parameter change and update this table for the final report.
+On take 01 we also measured roughly: noise-floor frames ~**20× quieter**, speech-ish level retained, no-ref noise reduction ~**10 dB**.
+
+---
+
+### Step D — Failure modes (brief requirement)
+
+The brief requires showing at least one condition where the method **degrades or fails**, with an explanation. We cover **both** allowed stress cases using our own recorded clean/noise material (the organic `noisy_market_*.wav` files remain the primary evaluation set).
+
+#### D1 — Very low input SNR
+
+```bash
+python src/failure_mode.py
+```
+
+| | |
+|--|--|
+| **What it does** | Mixes `clean_ref_01.wav` with `noise_only_01.wav` at a controlled **−5 dB** SNR (harsher than a typical natural market take) |
+| **Outputs** | `audio_demo/failure_mode/low_snr_input.wav`, `low_snr_enhanced.wav` |
+| **Indicative numbers** | SegSNR before ~−7.7 dB → after ~−3.8 dB (**+4.0 dB** improvement); LSD ~17.9 → ~15.9 (**slightly better**) |
+
+**What to teach / write in the report:** even when SegSNR moves a little, at −5 dB the PIN is **barely usable**. Spectral subtraction cannot invent missing speech energy under overwhelming babble; residual noise and spectral damage remain obvious on listening. This is the **very-low-SNR** failure regime (intelligibility collapse / marginal usability), not a claim that metrics always go negative.
+
+#### D2 — Non-stationary burst noise
+
+```bash
+python src/burst_failure_mode.py
+```
+
+| | |
+|--|--|
+| **What it does** | Injects a short **horn-like burst** (~0.35 s, low-band, near full scale) into `noisy_market_01.wav` mid-file |
+| **Outputs** | `audio_demo/failure_mode/burst_input.wav`, `burst_enhanced.wav` |
+| **Indicative numbers** | Burst-region reduction ~**−1.1 dB** (burst **not** suppressed; energy can even rise slightly after processing); quiet ambient frames elsewhere still get some reduction → **gap ~+1.8 dB** |
+
+**Why this fails by design (use this explanation):**
+
+1. Energy VAD treats the **loud** burst as speech-like (not “noise-only”), so it does **not** update the noise estimate from the burst.  
+2. The **residual gate** only attenuates **low-energy** frames (between digits). The burst is high energy → **full gain**.  
+3. Stationary/slowly varying market ambience is what our estimator was built for; a **sudden** non-stationary event passes through almost unsuppressed and can mask overlapping PIN digits.
+
+**Listen for the report/demo:** burst still dominates after enhancement; compare ambient bed vs burst region.
 
 ---
 
@@ -255,8 +302,10 @@ Re-run `run_pipeline.py` after any parameter change and update this table for th
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt    # once, or after dependency changes
 
-python src/noise_stats.py          # A — plots + printed drift / band energy
-python src/run_pipeline.py data/raw audio_demo   # B+C — enhance + metrics
+python src/noise_stats.py                      # A — plots + printed drift / band energy
+python src/run_pipeline.py data/raw audio_demo # B+C — enhance + metrics on all noisy_market_*
+python src/failure_mode.py                     # D1 — low-SNR stress pair
+python src/burst_failure_mode.py               # D2 — burst stress pair
 ```
 
 Keep venv active for every `python …` command.
@@ -268,10 +317,10 @@ Keep venv active for every `python …` command.
 | Step | Task | Status |
 |------|------|--------|
 | A | Noise characterisation | **Done** (save PNGs for report) |
-| B | Spectral subtraction + justified parameters | **Done** (first take; freeze before blind) |
-| C | Objective metrics on own data | **Done** (re-measure after freezes) |
-| D | **Failure mode** — very low SNR or burst noise take; explain degradation | Pending |
-| E | **Demo pack** — 2–3 clear before/after pairs in `audio_demo/` for live presentation | Partial (1 pair) |
+| B | Spectral subtraction + justified parameters | **Done** (freeze before blind) |
+| C | Objective metrics on own data | **Done** (3 organic takes) |
+| D | **Failure modes** — low SNR + burst | **Done** (scripts + `audio_demo/failure_mode/`) |
+| E | **Demo pack** — 2–3 clear before/after pairs for live presentation | **Partial** (3 enhanced organics + failure pairs; tidy naming/slides still optional) |
 | F | **Blind file** — when placed in `data/blind/`, run pipeline **unmodified** | Pending |
 | G | Report write-up + minimum research sources (method, metrics, MoMo/voice auth context) | Pending |
 
@@ -291,7 +340,7 @@ Do **not** retune α/β/gate on the blind file.
 2. **Why 32 ms / 50%:** standard STFT compromise; ~31 Hz bin spacing at 48 kHz frame length, short enough for PIN digits.  
 3. **Why non-stationary handling:** drift ≈ 0.17 → VAD-local noise + ambient `noise_only` shape + residual gate between digits.  
 4. **Why aggressive α and noise-relative β:** market energy is speech-like and low-band heavy; mild settings left the background too loud once PIN gain was restored.  
-5. **Known limit:** babble overlaps the PIN in frequency — residual chatter under speech and some musical/artefact trade-offs remain; show this honestly as a failure / limitation case if needed.
+5. **Known limits (failure modes):** (i) **very low SNR** — babble overwhelms PIN; enhancement cannot recover lost intelligibility; (ii) **bursts** — treated as speech by energy VAD/gate and largely left intact, masking digits.
 
 ---
 
@@ -299,6 +348,6 @@ Do **not** retune α/β/gate on the blind file.
 
 See `requirements.txt`:
 
-- `numpy`, `scipy` — arrays, STFT-related helpers, resampling  
+- `numpy`, `scipy` — arrays, STFT-related helpers, resampling, burst filter  
 - `soundfile` — WAV I/O  
 - `matplotlib` — noise-stats plots  
